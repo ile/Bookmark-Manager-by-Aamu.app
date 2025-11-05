@@ -1,0 +1,21 @@
+{
+  "name": "bookmark-tags-extension",
+  "version": "1.0.0",
+  "description": "",
+  "main": "background.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "vite build",
+    "watch": "vite build --watch"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "vite": "^7.1.12"
+  },
+  "dependencies": {
+    "@preact/preset-vite": "^2.10.2",
+    "preact": "^10.27.2",
+    "tippy.js": "^6.3.7"
+  }
+}
