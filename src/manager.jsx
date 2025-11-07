@@ -17,6 +17,12 @@ tippy.setDefaultProps({
 function BookmarkItem({ bookmark, onDelete, onEdit }) {
   const editButtonRef = useRef(null);
 
+  const handleDeleteClick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onDelete(bookmark);
+  };
+
   return (
     <div className="bookmark-item">
       <a 
@@ -44,7 +50,7 @@ function BookmarkItem({ bookmark, onDelete, onEdit }) {
             </span>
           ) || (<span className=""><span className="tag-badge">-</span></span>)}
         </button>
-          <span className="close-btn" onClick={() => onDelete(bookmark)}>
+          <span className="close-btn" onClick={handleDeleteClick}>
             <svg width="9" height="9" viewBox="0 0 14 14" fill="currentColor">
               <path d="M13 1L1 13M1 1l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
             </svg>
@@ -211,7 +217,6 @@ function TagPicker({ bookmark, tags, onSelectTag, onCreateTag, onClose, triggerE
 }
 
 // Main App Component
-// Main App Component
 function App() {
   const [state, setState] = useState({
     bookmarks: [],
@@ -226,6 +231,9 @@ function App() {
     bookmarkForTagging: null,
     tagPickerTrigger: null
   });
+
+  // Add a ref to store the timeout ID
+  const undoTimeoutRef = useRef(null);
 
   // Load bookmarks and organize tags
   useEffect(() => {
@@ -266,7 +274,7 @@ function App() {
       const allBookmarks = [];
       const tagSet = new Set();
       
-      function processNode(node, currentPath = []) {
+      function processNode(node, currentPath = [], parentId = '1') {
         if (node.url) {
           // It's a bookmark
           const bookmarkTags = currentPath.filter(path => 
@@ -277,6 +285,7 @@ function App() {
             title: node.title || 'Untitled',
             url: node.url,
             dateAdded: node.dateAdded,
+            parentId: node.parentId, // Store the parentId
             tags: bookmarkTags,
             favicon: `https://www.google.com/s2/favicons?domain=${new URL(node.url).hostname}&sz=16`
           });
@@ -286,7 +295,7 @@ function App() {
         } else if (node.children) {
           // It's a folder (tag)
           const newPath = [...currentPath, node.title];
-          node.children.forEach(child => processNode(child, newPath));
+          node.children.forEach(child => processNode(child, newPath, node.id));
         }
       }
       
@@ -330,13 +339,29 @@ function App() {
     }
   }
 
+
   function handleDeleteBookmark(bookmark) {
+    // Clear any existing timeout
+    if (undoTimeoutRef.current) {
+      clearTimeout(undoTimeoutRef.current);
+      undoTimeoutRef.current = null;
+    }
+
+    // Store the complete bookmark data including parentId before deleting
+    const bookmarkToDelete = {
+      ...bookmark,
+      originalParentId: bookmark.parentId // Store the original location
+    };
+    
+    // Delete from Chrome immediately
+    chrome.bookmarks.remove(bookmark.id);
+    
+    // Remove from UI state
     const newBookmarks = state.bookmarks.filter(b => b.id !== bookmark.id);
     
     setState(prev => ({
       ...prev,
       bookmarks: newBookmarks,
-      // Also update filteredBookmarks to maintain consistency
       filteredBookmarks: newBookmarks.filter(b => {
         if (state.selectedTag && !b.tags?.includes(state.selectedTag)) return false;
         if (state.searchQuery) {
@@ -347,52 +372,68 @@ function App() {
         }
         return true;
       }),
-      deletedBookmark: bookmark,
+      deletedBookmark: bookmarkToDelete, // Store the complete bookmark data
       showUndo: true
     }));
     
-    // Hide undo after 5 seconds
-    setTimeout(() => {
-      if (state.showUndo) {
-        confirmDelete();
-      }
+    // Set new timeout and store its ID
+    undoTimeoutRef.current = setTimeout(() => {
+      setState(prev => {
+        if (prev.showUndo) {
+          setState(prev => ({
+            ...prev,
+            showUndo: false,
+            deletedBookmark: null
+          }));
+        }
+        return prev;
+      });
+      undoTimeoutRef.current = null;
     }, 5000);
   }
 
   function handleUndoDelete() {
+    // Clear the timeout when undo is clicked
+    if (undoTimeoutRef.current) {
+      clearTimeout(undoTimeoutRef.current);
+      undoTimeoutRef.current = null;
+    }
+
     if (state.deletedBookmark) {
-      const restoredBookmarks = [...state.bookmarks, state.deletedBookmark].sort((a, b) => b.dateAdded - a.dateAdded);
+      // Restore to the original folder location
+      const parentId = state.deletedBookmark.originalParentId || '1';
       
-      setState(prev => ({
-        ...prev,
-        bookmarks: restoredBookmarks,
-        // Also update filteredBookmarks to maintain consistency
-        filteredBookmarks: restoredBookmarks.filter(b => {
-          if (state.selectedTag && !b.tags?.includes(state.selectedTag)) return false;
-          if (state.searchQuery) {
-            const query = state.searchQuery.toLowerCase();
-            return b.title.toLowerCase().includes(query) ||
-                   b.url.toLowerCase().includes(query) ||
-                   b.tags?.some(tag => tag.toLowerCase().includes(query));
-          }
-          return true;
-        }),
-        showUndo: false,
-        deletedBookmark: null
-      }));
+      chrome.bookmarks.create({
+        parentId: parentId, // Use the original parentId
+        title: state.deletedBookmark.title,
+        url: state.deletedBookmark.url
+      }, (restoredBookmark) => {
+        // Update UI state with the restored bookmark
+        const restoredBookmarks = [...state.bookmarks, {
+          ...state.deletedBookmark,
+          id: restoredBookmark.id, // Use the new ID from Chrome
+          parentId: parentId // Update to the restored parentId
+        }].sort((a, b) => b.dateAdded - a.dateAdded);
+        
+        setState(prev => ({
+          ...prev,
+          bookmarks: restoredBookmarks,
+          filteredBookmarks: restoredBookmarks.filter(b => {
+            if (state.selectedTag && !b.tags?.includes(state.selectedTag)) return false;
+            if (state.searchQuery) {
+              const query = state.searchQuery.toLowerCase();
+              return b.title.toLowerCase().includes(query) ||
+                     b.url.toLowerCase().includes(query) ||
+                     b.tags?.some(tag => tag.toLowerCase().includes(query));
+            }
+            return true;
+          }),
+          showUndo: false,
+          deletedBookmark: null
+        }));
+      });
     } else {
       setState(prev => ({ ...prev, showUndo: false }));
-    }
-  }
-
-  function confirmDelete() {
-    if (state.deletedBookmark) {
-      chrome.bookmarks.remove(state.deletedBookmark.id);
-      setState(prev => ({
-        ...prev,
-        deletedBookmark: null,
-        showUndo: false
-      }));
     }
   }
 
@@ -482,7 +523,7 @@ function App() {
               placeholder="Search bookmarks by title, URL, or tags..."
               value={state.searchQuery}
               onInput={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={handleKeyDown} // Add this line
+              onKeyDown={handleKeyDown}
             />
           </div>
         </div>
